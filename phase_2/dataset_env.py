@@ -2,12 +2,17 @@ import pandas as pd
 import numpy as np
 
 class DatasetEnv:
-    def __init__(self, file_path):
-        self.data = pd.read_excel(file_path)
+    def __init__(self, file_path=None, data=None):
+
+        if data is not None:
+            self.data = data
+        else:
+            self.data = pd.read_excel(file_path, sheet_name=3)
+
         self.n = len(self.data)
         self.current = 0
 
-        self.prices = sorted(self.data["price"].unique())
+        self.prices = sorted(self.data["action_price"].unique())
 
     def reset(self):
         self.current = 0
@@ -16,16 +21,13 @@ class DatasetEnv:
     def get_state(self):
         row = self.data.iloc[self.current]
 
-        # Convert categorical
-        customer_type = 1 if row["customer_type"] == "returning" else 0
-
+        # Use available features
         state = np.array([
-            row["demand_level"],
             row["hour"],
-            row["is_weekend"],
-            row["inventory_level"],
-            row["competitor_price"],
-            customer_type
+            row["hour_sin"],
+            row["hour_cos"],
+            row["day_of_week"],
+            row["product_score"]
         ])
 
         return state
@@ -35,10 +37,13 @@ class DatasetEnv:
 
         row = self.data.iloc[self.current]
 
-        if row["price"] == chosen_price:
-            reward = row["revenue"]
-        else:
-            reward = 0
+        # Simulated reward logic (since real price decision not present)
+        demand_factor = row["product_score"] / 5
+
+        # Simple demand logic
+        purchase_prob = max(0, 1 - chosen_price / 2000) * demand_factor
+
+        reward = chosen_price if np.random.rand() < purchase_prob else 0
 
         self.current += 1
         done = self.current >= self.n

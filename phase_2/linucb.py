@@ -9,6 +9,7 @@ class LinUCB:
         self.b = [np.zeros(n_features) for _ in range(n_arms)]
 
     def select_arm(self, state):
+        state = state / (np.linalg.norm(state) + 1e-6)
         p = []
 
         for a in range(self.n_arms):

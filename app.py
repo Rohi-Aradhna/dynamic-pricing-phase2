@@ -1,202 +1,199 @@
 import streamlit as st
-import pandas as pd
 import numpy as np
-from sklearn.neural_network import MLPRegressor
+import pandas as pd
+import matplotlib.pyplot as plt
 
-st.set_page_config(page_title="Dynamic Pricing System", layout="wide")
+from phase_2.dataset_env import DatasetEnv
+from phase_2.bandits_dataset import run_bandit
+from phase_2.linucb import LinUCB
+from phase_2.dqn_dataset import DQNAgent
+from phase_2.marl_agent import SimpleMARL
 
-st.title("📊 Dynamic Pricing Intelligence System")
+# ---------------------------
+# PAGE CONFIG
+# ---------------------------
+st.set_page_config(page_title="Dynamic Pricing AI", layout="wide")
 
-# -----------------------------------
-# MODEL FUNCTIONS
-# -----------------------------------
+st.title("💰 Dynamic Pricing Intelligence System")
+st.markdown("AI-based pricing using Bandits, DQN & MARL")
 
-def epsilon_greedy(prices, rewards):
-    Q = np.zeros(len(prices))
-    N = np.zeros(len(prices))
+# ---------------------------
+# LOAD DATASET (FIXED)
+# ---------------------------
+DATA_PATH = "data/RL_Dynamic_Pricing_Unified_Dataset.xlsx"
 
-    for i in range(len(rewards)):
-        if np.random.rand() < 0.1:
-            action = np.random.randint(len(prices))
-        else:
-            action = np.argmax(Q)
+df = pd.read_excel(DATA_PATH, sheet_name=3)
 
-        reward = rewards[i]
+st.success("Dataset Loaded Successfully ✅")
+st.write(f"Rows: {df.shape[0]}, Columns: {df.shape[1]}")
 
-        N[action] += 1
-        Q[action] += (reward - Q[action]) / N[action]
+# ---------------------------
+# 1. BASIC BANDIT
+# ---------------------------
+st.header("📊 Basic Bandit (ε-Greedy)")
 
-    return prices[np.argmax(Q)]
+env = DatasetEnv(data=df)
 
+rewards, arm_counts = run_bandit(env)
 
-def run_linucb(states, rewards, prices):
-    n_arms = len(prices)
-    d = states.shape[1]
+total_reward_bandit = np.sum(rewards)
 
-    A = [np.identity(d) for _ in range(n_arms)]
-    b = [np.zeros(d) for _ in range(n_arms)]
+st.metric("Total Reward", f"{total_reward_bandit:,.0f}")
 
-    for i in range(len(states)):
-        s = states[i]
+fig1, ax1 = plt.subplots()
+ax1.bar(range(len(arm_counts)), arm_counts)
+ax1.set_title("Bandit Arm Selection")
+ax1.set_xlabel("Price Arm")
+ax1.set_ylabel("Selections")
 
-        p_vals = []
-        for a in range(n_arms):
-            A_inv = np.linalg.inv(A[a])
-            theta = A_inv @ b[a]
-            p = theta @ s + 1.0 * np.sqrt(s @ A_inv @ s)
-            p_vals.append(p)
+st.pyplot(fig1)
 
-        action = np.argmax(p_vals)
-        reward = rewards[i]
+# ---------------------------
+# 2. LINUCB
+# ---------------------------
+st.header("🧠 Contextual Bandit (LinUCB)")
 
-        A[action] += np.outer(s, s)
-        b[action] += reward * s
+env = DatasetEnv(data=df)
+state = env.reset()
 
-    # pick best arm
-    scores = [np.linalg.norm(b[a]) for a in range(n_arms)]
-    return prices[np.argmax(scores)]
+n_arms = len(env.prices)
+n_features = len(state)
 
+agent = LinUCB(n_arms, n_features)
 
-def run_dqn(states, rewards, prices):
-    # Simple neural network approximation
-    X = states
-    y = rewards
+rewards = []
+arm_counts_linucb = np.zeros(n_arms)
 
-    model = MLPRegressor(hidden_layer_sizes=(64, 32), max_iter=200)
-    model.fit(X, y)
+for _ in range(5000):
+    action = agent.select_arm(state)
+    next_state, reward, done = env.step(action)
+
+    agent.update(action, state, reward)
+
+    rewards.append(reward)
+    arm_counts_linucb[action] += 1
+
+    if done:
+        break
+
+    state = next_state
+
+total_reward_linucb = np.sum(rewards)
+
+st.metric("Total Reward", f"{total_reward_linucb:,.0f}")
+
+fig2, ax2 = plt.subplots()
+ax2.bar(range(len(arm_counts_linucb)), arm_counts_linucb)
+ax2.set_title("LinUCB Arm Selection")
+ax2.set_xlabel("Price Arm")
+
+st.pyplot(fig2)
+
+# ---------------------------
+# 3. DQN (PRODUCT-WISE)
+# ---------------------------
+st.header("🤖 DQN (Product-wise Best Price)")
+
+product_results = {}
+
+for product in df["product_category"].unique():
+
+    df_product = df[df["product_category"] == product]
+
+    env = DatasetEnv(data=df_product)
+    state = env.reset()
+
+    states = []
+    rewards = []
+
+    for _ in range(3000):
+        action = np.random.randint(len(env.prices))
+        next_state, reward, done = env.step(action)
+
+        states.append(np.append(state, action))
+        rewards.append(reward)
+
+        if done:
+            break
+
+        state = next_state
+
+    states = np.array(states)
+    rewards = np.array(rewards)
+
+    agent = DQNAgent(states.shape[1], len(env.prices))
+    agent.train(states, rewards)
 
     avg_state = np.mean(states, axis=0)
 
     predictions = []
+    for a in range(len(env.prices)):
+        test_state = avg_state.copy()
+        test_state[-1] = a
+        predictions.append(agent.predict(test_state))
 
-    for p in prices:
-        state = np.append(avg_state, p)
-        pred = model.predict([state])[0]
-        predictions.append(pred)
+    best_price = env.prices[np.argmax(predictions)]
 
-    return prices[np.argmax(predictions)]
+    product_results[product] = best_price
 
+# Display nicely
+for product, price in product_results.items():
+    st.write(f"**{product} → ₹{price}**")
 
-# -----------------------------------
-# FILE UPLOAD
-# -----------------------------------
+# ---------------------------
+# 4. MARL
+# ---------------------------
+st.header("👥 Multi-Agent RL (MARL)")
 
-uploaded_file = st.file_uploader("📂 Upload Online Retail Dataset", type=["csv", "xlsx"])
+env = DatasetEnv(data=df)
+state = env.reset()
 
-if uploaded_file:
+marl = SimpleMARL(n_agents=2, n_actions=len(env.prices))
 
-    # Load data
-    if uploaded_file.name.endswith(".csv"):
-        df = pd.read_csv(uploaded_file)
-    else:
-        df = pd.read_excel(uploaded_file)
+rewards = []
+arm_counts_marl = np.zeros(len(env.prices))
 
-    st.subheader("🔍 Raw Data Preview")
-    st.dataframe(df.head())
+for _ in range(5000):
+    actions = marl.select_actions()
 
-    # -----------------------------------
-    # REQUIRED COLUMNS CHECK
-    # -----------------------------------
+    action = actions[0]  # pick agent 1
+    next_state, reward, done = env.step(action)
 
-    required_cols = ["UnitPrice", "Quantity", "InvoiceDate", "CustomerID"]
+    marl.update(actions, reward)
 
-    if not all(col in df.columns for col in required_cols):
-        st.error("Dataset must contain: UnitPrice, Quantity, InvoiceDate, CustomerID")
-        st.stop()
+    rewards.append(reward)
+    arm_counts_marl[action] += 1
 
-    # -----------------------------------
-    # CLEANING
-    # -----------------------------------
+    if done:
+        break
 
-    df = df.dropna(subset=required_cols)
-    df = df[df["Quantity"] > 0]
-    df = df[df["UnitPrice"] > 0]
+total_reward_marl = np.sum(rewards)
 
-    # -----------------------------------
-    # FEATURE ENGINEERING
-    # -----------------------------------
+st.metric("Total Reward", f"{total_reward_marl:,.0f}")
 
-    df["InvoiceDate"] = pd.to_datetime(df["InvoiceDate"])
+fig3, ax3 = plt.subplots()
+ax3.bar(range(len(arm_counts_marl)), arm_counts_marl)
+ax3.set_title("MARL Price Selection")
 
-    df["hour"] = df["InvoiceDate"].dt.hour
-    df["is_weekend"] = (df["InvoiceDate"].dt.weekday >= 5).astype(int)
+st.pyplot(fig3)
 
-    df["customer_type"] = df["CustomerID"].duplicated().astype(int)
+# ---------------------------
+# FINAL COMPARISON
+# ---------------------------
+st.header("🏆 Algorithm Comparison")
 
-    df["demand"] = df["Quantity"]
-    df["revenue"] = df["UnitPrice"] * df["Quantity"]
+comparison = {
+    "Bandit": total_reward_bandit,
+    "LinUCB": total_reward_linucb,
+    "MARL": total_reward_marl
+}
 
-    st.subheader("🧹 Processed Data")
-    st.dataframe(df.head())
+best_algo = max(comparison, key=comparison.get)
 
-    # -----------------------------------
-    # PREPARE DATA FOR MODELS
-    # -----------------------------------
+st.success(f"Best Performing Algorithm: {best_algo} 🚀")
 
-    # Normalize price to fixed bins (important!)
-    price_bins = np.linspace(df["UnitPrice"].min(), df["UnitPrice"].max(), 5)
-    df["price_bin"] = np.digitize(df["UnitPrice"], price_bins)
+fig4, ax4 = plt.subplots()
+ax4.bar(comparison.keys(), comparison.values())
+ax4.set_title("Total Reward Comparison")
 
-    prices = sorted(df["price_bin"].unique())
-
-    states = df[["hour", "is_weekend", "customer_type", "demand"]].values
-    rewards = df["revenue"].values
-
-    # -----------------------------------
-    # RUN MODELS
-    # -----------------------------------
-
-    st.subheader("⚙️ Model Results")
-
-    col1, col2, col3 = st.columns(3)
-
-    with col1:
-        bandit_price = epsilon_greedy(prices, rewards)
-        st.metric("ε-Greedy", bandit_price)
-
-    with col2:
-        linucb_price = run_linucb(states, rewards, prices)
-        st.metric("LinUCB", linucb_price)
-
-    with col3:
-        dqn_price = run_dqn(states, rewards, prices)
-        st.metric("DQN", dqn_price)
-
-    # -----------------------------------
-    # USER SIMULATION
-    # -----------------------------------
-
-    st.subheader("🎯 Pricing Simulator")
-
-    hour = st.slider("Hour", 0, 23, 12)
-    is_weekend = st.selectbox("Weekend?", [0, 1])
-    customer_type = st.selectbox("Customer Type", ["new", "returning"])
-    demand = st.slider("Demand Level", 0.0, 10.0, 5.0)
-
-    customer_val = 1 if customer_type == "returning" else 0
-
-    input_state = np.array([hour, is_weekend, customer_val, demand])
-
-    # Evaluate best price for this state
-    best_prices = []
-
-    for p in prices:
-        state = np.append(input_state, p)
-        score = np.sum(state)  # simple heuristic
-        best_prices.append(score)
-
-    best_price = prices[np.argmax(best_prices)]
-
-    st.success(f"💡 Suggested Optimal Price (for given scenario): {best_price}")
-
-    # -----------------------------------
-    # SUMMARY
-    # -----------------------------------
-
-    st.subheader("📌 Summary")
-
-    st.write("""
-    - ε-Greedy: Learns a single best price overall (baseline)
-    - LinUCB: Adapts price based on contextual features
-    - DQN: Uses neural networks to learn complex pricing patterns
-    """)
+st.pyplot(fig4)
