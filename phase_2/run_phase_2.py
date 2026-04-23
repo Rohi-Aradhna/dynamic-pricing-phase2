@@ -10,7 +10,7 @@ from marl_agent import CategoryMARL, SELLER_CATEGORIES, UNIT_COSTS
 # ─────────────────────────────────────────────────────────────────────────────
 # CONFIG
 # ─────────────────────────────────────────────────────────────────────────────
-DATA_PATH   = "../data/RL_Dynamic_Pricing_Unified_Dataset.xlsx"
+DATA_PATH   = "data/RL_Dynamic_Pricing_Unified_Dataset.xlsx"
 N_STEPS     = 10000   # steps for bandit / linucb / old marl
 N_EPISODES  = 400     # episodes for new CategoryMARL
 SELLER_COLORS = {
